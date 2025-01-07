@@ -7,54 +7,77 @@ const path = require('path');
 const fs = require('fs');
 
 const app = express();
+const isDevelopment = process.env.NODE_ENV !== 'production';
 
-// SSL configuration
-const credentials = {
-  key: fs.readFileSync('/etc/letsencrypt/live/ruletka.top/privkey.pem'),
-  cert: fs.readFileSync('/etc/letsencrypt/live/ruletka.top/fullchain.pem')
-};
+let httpsServer;
+let io;
 
 // Serve static files in production
 app.use(express.static(path.join(__dirname, '../ruletka/build')));
 
 // CORS configuration
-app.use(cors({
-  origin: ["https://ruletka.top"],
+const corsOptions = {
+  origin: isDevelopment ? ["http://localhost:3000"] : ["https://ruletka.top"],
   methods: ["GET", "POST"],
   credentials: true
-}));
+};
 
-// Create HTTPS server
-const httpsServer = https.createServer(credentials, app);
+app.use(cors(corsOptions));
 
-// Socket.IO configuration
-const io = new Server(httpsServer, {
-  path: '/socket.io',
-  cors: {
-    origin: ["https://ruletka.top"],
-    methods: ["GET", "POST"],
-    credentials: true,
-    allowedHeaders: ["*"]
-  },
-  transports: ['websocket', 'polling'],
-  pingTimeout: 60000,
-  pingInterval: 25000,
-  allowEIO3: true,
-  cookie: {
-    name: 'io',
-    path: '/',
-    httpOnly: true,
-    sameSite: 'strict',
-    secure: true
-  }
-});
+if (isDevelopment) {
+  // Development: Create HTTP server
+  const httpServer = http.createServer(app);
+  io = new Server(httpServer, {
+    path: '/socket.io',
+    cors: corsOptions,
+    transports: ['websocket', 'polling'],
+    pingTimeout: 60000,
+    pingInterval: 25000,
+    allowEIO3: true
+  });
+  
+  httpServer.listen(5002, () => {
+    console.log('Development HTTP Server running on port 5002');
+  });
+} else {
+  // Production: Create HTTPS server with SSL
+  const credentials = {
+    key: fs.readFileSync('/etc/letsencrypt/live/ruletka.top/privkey.pem'),
+    cert: fs.readFileSync('/etc/letsencrypt/live/ruletka.top/fullchain.pem')
+  };
+  
+  httpsServer = https.createServer(credentials, app);
+  io = new Server(httpsServer, {
+    path: '/socket.io',
+    cors: corsOptions,
+    transports: ['websocket', 'polling'],
+    pingTimeout: 60000,
+    pingInterval: 25000,
+    allowEIO3: true,
+    cookie: {
+      name: 'io',
+      path: '/',
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: true
+    }
+  });
 
-// Redirect HTTP to HTTPS
-const httpApp = express();
-httpApp.use((req, res) => {
-  res.redirect(`https://${req.headers.host}${req.url}`);
-});
-const httpServer = http.createServer(httpApp);
+  // Redirect HTTP to HTTPS in production
+  const httpApp = express();
+  httpApp.use((req, res) => {
+    res.redirect(`https://${req.headers.host}${req.url}`);
+  });
+  const httpServer = http.createServer(httpApp);
+  
+  httpServer.listen(80, () => {
+    console.log('HTTP Server running on port 80 (redirecting to HTTPS)');
+  });
+  
+  httpsServer.listen(443, () => {
+    console.log('HTTPS Server running on port 443');
+  });
+}
 
 // Handle production routing
 app.get('*', (req, res) => {
@@ -231,16 +254,4 @@ setInterval(() => {
   }
   
   console.log('After cleanup - Waiting users:', Array.from(waitingUsers.keys()));
-}, 30000);
-
-// Start servers
-const HTTP_PORT = 80;
-const HTTPS_PORT = 443;
-
-httpServer.listen(HTTP_PORT, () => {
-  console.log(`HTTP Server running on port ${HTTP_PORT} (redirecting to HTTPS)`);
-});
-
-httpsServer.listen(HTTPS_PORT, () => {
-  console.log(`HTTPS Server running on port ${HTTPS_PORT}`);
-}); 
+}, 30000); 
