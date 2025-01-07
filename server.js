@@ -45,40 +45,31 @@ io.on('connection', (socket) => {
     // Удаляем из списка ожидания, если был там
     waitingUsers.delete(socket.id);
 
-    // Ищем партнера
-    if (waitingUsers.size > 0) {
-      log('Found waiting users:', waitingUsers.size);
-      let partnerSocket = null;
-      
-      // Находим первого доступного партнера
-      for (const waitingUser of waitingUsers) {
-        if (waitingUser !== socket.id && io.sockets.sockets.get(waitingUser)) {
-          partnerSocket = waitingUser;
-          break;
-        }
-      }
+    // Проверяем активных пользователей в списке ожидания
+    const activeWaitingUsers = Array.from(waitingUsers).filter(userId => 
+      io.sockets.sockets.get(userId) && userId !== socket.id
+    );
 
-      if (partnerSocket) {
-        log('Connecting users:', socket.id, 'and', partnerSocket);
-        waitingUsers.delete(partnerSocket);
-        
-        const roomId = `${socket.id}-${partnerSocket}`;
-        socket.join(roomId);
-        io.sockets.sockets.get(partnerSocket).join(roomId);
-        
-        connectedPairs.set(socket.id, { partner: partnerSocket, room: roomId });
-        connectedPairs.set(partnerSocket, { partner: socket.id, room: roomId });
-        
-        // Отправляем событие начала чата обоим участникам
-        socket.emit('chatStarted', { roomId, isInitiator: true });
-        io.to(partnerSocket).emit('chatStarted', { roomId, isInitiator: false });
-      } else {
-        log('No available partners, adding to waiting list:', socket.id);
-        waitingUsers.add(socket.id);
-        socket.emit('waiting');
-      }
+    if (activeWaitingUsers.length > 0) {
+      // Берем случайного пользователя из списка ожидания
+      const randomIndex = Math.floor(Math.random() * activeWaitingUsers.length);
+      const partnerSocket = activeWaitingUsers[randomIndex];
+      
+      log('Connecting users:', socket.id, 'and', partnerSocket);
+      waitingUsers.delete(partnerSocket);
+      
+      const roomId = `${socket.id}-${partnerSocket}`;
+      socket.join(roomId);
+      io.sockets.sockets.get(partnerSocket).join(roomId);
+      
+      connectedPairs.set(socket.id, { partner: partnerSocket, room: roomId });
+      connectedPairs.set(partnerSocket, { partner: socket.id, room: roomId });
+      
+      // Отправляем событие начала чата обоим участникам
+      socket.emit('chatStarted', { roomId, isInitiator: true });
+      io.to(partnerSocket).emit('chatStarted', { roomId, isInitiator: false });
     } else {
-      log('No waiting users, adding to waiting list:', socket.id);
+      log('No available partners, adding to waiting list:', socket.id);
       waitingUsers.add(socket.id);
       socket.emit('waiting');
     }
@@ -162,14 +153,41 @@ io.on('connection', (socket) => {
   });
 });
 
-// Периодическая очистка "зависших" пользователей
+// Периодическая очистка "зависших" пользователей и автоматическое соединение ожидающих
 setInterval(() => {
+  // Очистка отключенных пользователей
   for (const userId of waitingUsers) {
     if (!io.sockets.sockets.get(userId)) {
       waitingUsers.delete(userId);
     }
   }
-}, 10000);
+
+  // Попытка соединить ожидающих пользователей
+  const activeWaitingUsers = Array.from(waitingUsers).filter(userId => 
+    io.sockets.sockets.get(userId) && !connectedPairs.has(userId)
+  );
+
+  while (activeWaitingUsers.length >= 2) {
+    const user1 = activeWaitingUsers.shift();
+    const user2 = activeWaitingUsers.shift();
+
+    if (io.sockets.sockets.get(user1) && io.sockets.sockets.get(user2)) {
+      const roomId = `${user1}-${user2}`;
+      
+      waitingUsers.delete(user1);
+      waitingUsers.delete(user2);
+      
+      io.sockets.sockets.get(user1).join(roomId);
+      io.sockets.sockets.get(user2).join(roomId);
+      
+      connectedPairs.set(user1, { partner: user2, room: roomId });
+      connectedPairs.set(user2, { partner: user1, room: roomId });
+      
+      io.to(user1).emit('chatStarted', { roomId, isInitiator: true });
+      io.to(user2).emit('chatStarted', { roomId, isInitiator: false });
+    }
+  }
+}, 5000);
 
 const PORT = process.env.PORT || 5002;
 server.listen(PORT, () => {
