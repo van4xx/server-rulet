@@ -38,116 +38,118 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../ruletka/build/index.html'));
 });
 
-const waitingUsers = new Set();
+// Глобальные переменные для отслеживания пользователей
+const waitingUsers = new Map();
 const connectedPairs = new Map();
+const userStates = new Map();
 let onlineUsers = 0;
 
-const debug = true;
-const log = (...args) => {
-  if (debug) console.log(...args);
-};
+function findMatch(socket) {
+  console.log('Finding match for:', socket.id);
+  console.log('Waiting users:', Array.from(waitingUsers.keys()));
+
+  // Ищем подходящего партнера среди ожидающих
+  for (const [partnerId, partnerData] of waitingUsers) {
+    if (partnerId !== socket.id && io.sockets.sockets.get(partnerId)) {
+      // Создаем новую комнату
+      const roomId = `room_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Удаляем обоих пользователей из очереди ожидания
+      waitingUsers.delete(socket.id);
+      waitingUsers.delete(partnerId);
+
+      // Добавляем пару в активные соединения
+      connectedPairs.set(socket.id, { partner: partnerId, room: roomId });
+      connectedPairs.set(partnerId, { partner: socket.id, room: roomId });
+
+      // Присоединяем обоих к комнате
+      socket.join(roomId);
+      io.sockets.sockets.get(partnerId)?.join(roomId);
+
+      console.log('Match found:', socket.id, 'with', partnerId, 'in room', roomId);
+
+      // Уведомляем обоих пользователей
+      io.to(roomId).emit('chatStarted', { roomId });
+      
+      // Устанавливаем состояние соединения
+      userStates.set(socket.id, 'connected');
+      userStates.set(partnerId, 'connected');
+
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function handleDisconnect(socket) {
+  console.log('Handling disconnect for:', socket.id);
+  
+  // Удаляем из списка ожидающих
+  if (waitingUsers.has(socket.id)) {
+    waitingUsers.delete(socket.id);
+    console.log('Removed from waiting list:', socket.id);
+  }
+
+  // Обрабатываем активное соединение
+  const pair = connectedPairs.get(socket.id);
+  if (pair) {
+    const { partner, room } = pair;
+    console.log('Found active pair:', socket.id, 'with', partner, 'in room', room);
+    
+    // Уведомляем партнера
+    io.to(partner).emit('partnerLeft');
+    
+    // Очищаем комнату
+    socket.leave(room);
+    const partnerSocket = io.sockets.sockets.get(partner);
+    if (partnerSocket) {
+      partnerSocket.leave(room);
+    }
+    
+    // Удаляем пару из активных соединений
+    connectedPairs.delete(socket.id);
+    connectedPairs.delete(partner);
+    
+    // Очищаем состояния
+    userStates.delete(socket.id);
+    userStates.delete(partner);
+    
+    console.log('Disconnected pair cleaned up');
+  }
+}
 
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
   onlineUsers++;
   io.emit('updateOnlineCount', onlineUsers);
 
-  // Очередь ожидающих пользователей
-  const waitingUsers = new Map();
-  // Активные соединения
-  const connectedPairs = new Map();
-  // Состояния пользователей
-  const userStates = new Map();
-
   socket.on('startSearch', () => {
-    console.log('User started search:', socket.id);
+    console.log('Search started by:', socket.id);
     
-    // Если пользователь уже в паре, разрываем предыдущее соединение
-    const currentPair = connectedPairs.get(socket.id);
-    if (currentPair) {
-      handleDisconnect(socket.id);
-    }
-
-    // Добавляем пользователя в очередь ожидания
+    // Сначала отключаем от предыдущего чата, если есть
+    handleDisconnect(socket);
+    
+    // Добавляем в список ожидания
     waitingUsers.set(socket.id, {
       timestamp: Date.now(),
       preferences: socket.preferences || {}
     });
+    
+    console.log('Added to waiting list:', socket.id);
+    console.log('Current waiting users:', Array.from(waitingUsers.keys()));
 
-    // Пытаемся найти подходящего партнера
-    findMatch(socket);
+    // Пытаемся найти партнера
+    if (!findMatch(socket)) {
+      console.log('No match found, user waiting:', socket.id);
+      socket.emit('waiting');
+    }
   });
 
-  function findMatch(socket) {
-    const currentUser = waitingUsers.get(socket.id);
-    if (!currentUser) return;
-
-    // Ищем подходящего партнера среди ожидающих
-    for (const [partnerId, partnerData] of waitingUsers) {
-      if (partnerId !== socket.id && isCompatible(currentUser, partnerData)) {
-        // Создаем новую комнату
-        const roomId = `room_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        
-        // Удаляем обоих пользователей из очереди ожидания
-        waitingUsers.delete(socket.id);
-        waitingUsers.delete(partnerId);
-
-        // Добавляем пару в активные соединения
-        connectedPairs.set(socket.id, { partner: partnerId, room: roomId });
-        connectedPairs.set(partnerId, { partner: socket.id, room: roomId });
-
-        // Присоединяем обоих к комнате
-        socket.join(roomId);
-        io.sockets.sockets.get(partnerId)?.join(roomId);
-
-        // Уведомляем обоих пользователей
-        io.to(roomId).emit('chatStarted', { roomId });
-        
-        // Устанавливаем состояние соединения
-        userStates.set(socket.id, 'connected');
-        userStates.set(partnerId, 'connected');
-
-        return;
-      }
-    }
-
-    // Если партнер не найден, отправляем статус ожидания
-    socket.emit('waiting');
-  }
-
-  function isCompatible(user1, user2) {
-    // Здесь можно добавить логику проверки совместимости пользователей
-    // Например, по языку, региону, интересам и т.д.
-    return true;
-  }
-
-  function handleDisconnect(userId) {
-    const pair = connectedPairs.get(userId);
-    if (pair) {
-      const { partner, room } = pair;
-      
-      // Уведомляем партнера
-      io.to(partner).emit('partnerLeft');
-      
-      // Очищаем комнату
-      socket.leave(room);
-      io.sockets.sockets.get(partner)?.leave(room);
-      
-      // Удаляем пару из активных соединений
-      connectedPairs.delete(userId);
-      connectedPairs.delete(partner);
-      
-      // Очищаем состояния
-      userStates.delete(userId);
-      userStates.delete(partner);
-    }
-    
-    // Удаляем из очереди ожидания
-    waitingUsers.delete(userId);
-  }
-
   socket.on('nextPartner', ({ roomId }) => {
-    handleDisconnect(socket.id);
+    console.log('Next partner requested by:', socket.id);
+    handleDisconnect(socket);
+    
     // Автоматически начинаем новый поиск
     process.nextTick(() => {
       socket.emit('startSearch');
@@ -155,12 +157,13 @@ io.on('connection', (socket) => {
   });
 
   socket.on('leaveRoom', ({ roomId }) => {
-    handleDisconnect(socket.id);
+    console.log('Leave room requested by:', socket.id);
+    handleDisconnect(socket);
   });
 
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
-    handleDisconnect(socket.id);
+    handleDisconnect(socket);
     onlineUsers--;
     io.emit('updateOnlineCount', onlineUsers);
   });
@@ -182,14 +185,30 @@ io.on('connection', (socket) => {
   });
 });
 
-// Периодическая очистка "зависших" пользователей
+// Периодическая очистка неактивных пользователей
 setInterval(() => {
-  for (const userId of waitingUsers) {
+  console.log('Cleaning inactive users...');
+  console.log('Before cleanup - Waiting users:', Array.from(waitingUsers.keys()));
+  
+  for (const [userId, userData] of waitingUsers) {
+    // Проверяем, существует ли еще сокет
     if (!io.sockets.sockets.get(userId)) {
+      console.log('Removing inactive user:', userId);
       waitingUsers.delete(userId);
     }
+    // Проверяем время ожидания (более 5 минут)
+    else if (Date.now() - userData.timestamp > 5 * 60 * 1000) {
+      console.log('Removing user due to timeout:', userId);
+      waitingUsers.delete(userId);
+      const socket = io.sockets.sockets.get(userId);
+      if (socket) {
+        socket.emit('searchTimeout');
+      }
+    }
   }
-}, 10000);
+  
+  console.log('After cleanup - Waiting users:', Array.from(waitingUsers.keys()));
+}, 30000);
 
 const PORT = process.env.PORT || 5001;
 server.listen(PORT, () => {
