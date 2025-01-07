@@ -5,37 +5,24 @@ const cors = require('cors');
 const path = require('path');
 
 const app = express();
-const server = http.createServer(app);
-
-const allowedOrigins = [
-  'https://ruletka.top',
-  'http://localhost:3000',
-  'http://localhost:5001'
-];
-
-// CORS configuration
-app.use(cors({
-  origin: function(origin, callback) {
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      console.log('Origin blocked:', origin);
-      callback(null, false);
-    }
-  },
-  methods: ["GET", "POST"],
-  credentials: true,
-  allowedHeaders: ["*"]
-}));
 
 // Serve static files in production
 app.use(express.static(path.join(__dirname, '../ruletka/build')));
+
+// CORS configuration
+app.use(cors({
+  origin: ["https://ruletka.top", "http://localhost:3000"],
+  methods: ["GET", "POST"],
+  credentials: true
+}));
+
+const server = http.createServer(app);
 
 // Socket.IO configuration
 const io = new Server(server, {
   path: '/socket.io',
   cors: {
-    origin: allowedOrigins,
+    origin: ["https://ruletka.top", "http://localhost:3000"],
     methods: ["GET", "POST"],
     credentials: true,
     allowedHeaders: ["*"]
@@ -43,12 +30,7 @@ const io = new Server(server, {
   transports: ['websocket', 'polling'],
   pingTimeout: 60000,
   pingInterval: 25000,
-  allowEIO3: true,
-  cookie: {
-    name: "io",
-    httpOnly: true,
-    sameSite: "lax"
-  }
+  allowEIO3: true
 });
 
 // Handle production routing
@@ -71,6 +53,8 @@ function findMatch(socket) {
     if (partnerId !== socket.id && io.sockets.sockets.get(partnerId)) {
       // Создаем новую комнату
       const roomId = `room_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      console.log(`Creating room ${roomId} for users ${socket.id} and ${partnerId}`);
       
       // Удаляем обоих пользователей из очереди ожидания
       waitingUsers.delete(socket.id);
@@ -164,12 +148,25 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Обработка сигналов WebRTC
+  socket.on('signal', ({ signal, roomId }) => {
+    console.log(`Received signal from ${socket.id} for room ${roomId}`);
+    const pair = connectedPairs.get(socket.id);
+    if (pair && pair.room === roomId) {
+      console.log(`Forwarding signal to partner in room ${roomId}`);
+      socket.to(roomId).emit('signal', { signal, from: socket.id });
+    } else {
+      console.log(`Invalid room or pair for signal: ${roomId}`);
+    }
+  });
+
   socket.on('nextPartner', ({ roomId }) => {
     console.log('Next partner requested by:', socket.id);
     handleDisconnect(socket);
     
     // Автоматически начинаем новый поиск
     process.nextTick(() => {
+      console.log('Starting new search for:', socket.id);
       socket.emit('startSearch');
     });
   });
@@ -186,16 +183,9 @@ io.on('connection', (socket) => {
     io.emit('updateOnlineCount', onlineUsers);
   });
 
-  // Обработка сигналов WebRTC
-  socket.on('signal', ({ signal, roomId }) => {
-    const pair = connectedPairs.get(socket.id);
-    if (pair && pair.room === roomId) {
-      socket.to(roomId).emit('signal', { signal, from: socket.id });
-    }
-  });
-
   // Обработка сообщений чата
   socket.on('message', ({ roomId, message }) => {
+    console.log(`Message from ${socket.id} in room ${roomId}`);
     const pair = connectedPairs.get(socket.id);
     if (pair && pair.room === roomId) {
       socket.to(roomId).emit('message', { message });
