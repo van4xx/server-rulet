@@ -2,8 +2,14 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
+
+// Serve static files in production
+app.use(express.static(path.join(__dirname, '../ruletka/build')));
+
+// CORS configuration
 app.use(cors({
   origin: ["https://ruletka.top", "http://localhost:3000"],
   methods: ["GET", "POST"],
@@ -11,15 +17,25 @@ app.use(cors({
 }));
 
 const server = http.createServer(app);
+
+// Socket.IO configuration
 const io = new Server(server, {
+  path: '/socket.io',
   cors: {
     origin: ["https://ruletka.top", "http://localhost:3000"],
     methods: ["GET", "POST"],
-    credentials: true
+    credentials: true,
+    allowedHeaders: ["*"]
   },
   transports: ['websocket', 'polling'],
   pingTimeout: 60000,
-  pingInterval: 25000
+  pingInterval: 25000,
+  allowEIO3: true
+});
+
+// Handle production routing
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../ruletka/build/index.html'));
 });
 
 const waitingUsers = new Set();
@@ -32,119 +48,136 @@ const log = (...args) => {
 };
 
 io.on('connection', (socket) => {
-  log('User connected:', socket.id);
+  console.log('User connected:', socket.id);
   onlineUsers++;
   io.emit('updateOnlineCount', onlineUsers);
 
+  // Очередь ожидающих пользователей
+  const waitingUsers = new Map();
+  // Активные соединения
+  const connectedPairs = new Map();
+  // Состояния пользователей
+  const userStates = new Map();
+
   socket.on('startSearch', () => {
-    log('User started searching:', socket.id);
+    console.log('User started search:', socket.id);
     
-    // Если пользователь уже в паре, отключаем его
-    const existingPair = connectedPairs.get(socket.id);
-    if (existingPair) {
-      log('User was in pair, disconnecting from previous partner');
-      const { partner, room } = existingPair;
-      socket.leave(room);
-      io.sockets.sockets.get(partner)?.leave(room);
-      connectedPairs.delete(socket.id);
-      connectedPairs.delete(partner);
-      io.to(partner).emit('partnerLeft');
-    }
-
-    // Проверяем, что пользователь не в списке ожидания
-    if (waitingUsers.has(socket.id)) {
-      log('User already in waiting list');
-      return;
-    }
-
-    // Ищем партнера
-    if (waitingUsers.size > 0) {
-      log('Found waiting users:', waitingUsers.size);
-      let partnerSocket = null;
-      
-      for (const waitingUser of waitingUsers) {
-        if (waitingUser !== socket.id && io.sockets.sockets.get(waitingUser)) {
-          partnerSocket = waitingUser;
-          break;
-        }
-      }
-
-      if (partnerSocket) {
-        log('Connecting users:', socket.id, 'and', partnerSocket);
-        waitingUsers.delete(partnerSocket);
-        
-        const roomId = `${socket.id}-${partnerSocket}`;
-        socket.join(roomId);
-        io.sockets.sockets.get(partnerSocket).join(roomId);
-        
-        connectedPairs.set(socket.id, { partner: partnerSocket, room: roomId });
-        connectedPairs.set(partnerSocket, { partner: socket.id, room: roomId });
-        
-        io.to(roomId).emit('chatStarted', { roomId });
-      } else {
-        log('No available partners, adding to waiting list:', socket.id);
-        waitingUsers.add(socket.id);
-      }
-    } else {
-      log('No waiting users, adding to waiting list:', socket.id);
-      waitingUsers.add(socket.id);
-    }
-  });
-
-  socket.on('sendSignal', ({ signal, to }) => {
-    console.log('Signal sent from', socket.id, 'to', to);
-    // Находим партнера через пару
-    const pair = connectedPairs.get(socket.id);
-    if (pair) {
-      io.to(pair.partner).emit('receiveSignal', { signal, from: socket.id });
-    }
-  });
-
-  socket.on('returnSignal', ({ signal, to }) => {
-    console.log('Return signal from', socket.id, 'to', to);
-    io.to(to).emit('receiveReturnSignal', { signal, from: socket.id });
-  });
-
-  socket.on('message', ({ roomId, message }) => {
-    socket.to(roomId).emit('message', message);
-  });
-
-  socket.on('nextPartner', () => {
+    // Если пользователь уже в паре, разрываем предыдущее соединение
     const currentPair = connectedPairs.get(socket.id);
     if (currentPair) {
-      const { partner, room } = currentPair;
+      handleDisconnect(socket.id);
+    }
+
+    // Добавляем пользователя в очередь ожидания
+    waitingUsers.set(socket.id, {
+      timestamp: Date.now(),
+      preferences: socket.preferences || {}
+    });
+
+    // Пытаемся найти подходящего партнера
+    findMatch(socket);
+  });
+
+  function findMatch(socket) {
+    const currentUser = waitingUsers.get(socket.id);
+    if (!currentUser) return;
+
+    // Ищем подходящего партнера среди ожидающих
+    for (const [partnerId, partnerData] of waitingUsers) {
+      if (partnerId !== socket.id && isCompatible(currentUser, partnerData)) {
+        // Создаем новую комнату
+        const roomId = `room_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Удаляем обоих пользователей из очереди ожидания
+        waitingUsers.delete(socket.id);
+        waitingUsers.delete(partnerId);
+
+        // Добавляем пару в активные соединения
+        connectedPairs.set(socket.id, { partner: partnerId, room: roomId });
+        connectedPairs.set(partnerId, { partner: socket.id, room: roomId });
+
+        // Присоединяем обоих к комнате
+        socket.join(roomId);
+        io.sockets.sockets.get(partnerId)?.join(roomId);
+
+        // Уведомляем обоих пользователей
+        io.to(roomId).emit('chatStarted', { roomId });
+        
+        // Устанавливаем состояние соединения
+        userStates.set(socket.id, 'connected');
+        userStates.set(partnerId, 'connected');
+
+        return;
+      }
+    }
+
+    // Если партнер не найден, отправляем статус ожидания
+    socket.emit('waiting');
+  }
+
+  function isCompatible(user1, user2) {
+    // Здесь можно добавить логику проверки совместимости пользователей
+    // Например, по языку, региону, интересам и т.д.
+    return true;
+  }
+
+  function handleDisconnect(userId) {
+    const pair = connectedPairs.get(userId);
+    if (pair) {
+      const { partner, room } = pair;
       
+      // Уведомляем партнера
+      io.to(partner).emit('partnerLeft');
+      
+      // Очищаем комнату
       socket.leave(room);
       io.sockets.sockets.get(partner)?.leave(room);
       
-      connectedPairs.delete(socket.id);
+      // Удаляем пару из активных соединений
+      connectedPairs.delete(userId);
       connectedPairs.delete(partner);
       
-      io.to(partner).emit('partnerLeft');
+      // Очищаем состояния
+      userStates.delete(userId);
+      userStates.delete(partner);
     }
     
+    // Удаляем из очереди ожидания
+    waitingUsers.delete(userId);
+  }
+
+  socket.on('nextPartner', ({ roomId }) => {
+    handleDisconnect(socket.id);
     // Автоматически начинаем новый поиск
-    socket.emit('searchingNewPartner');
     process.nextTick(() => {
       socket.emit('startSearch');
     });
   });
 
+  socket.on('leaveRoom', ({ roomId }) => {
+    handleDisconnect(socket.id);
+  });
+
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
+    handleDisconnect(socket.id);
     onlineUsers--;
     io.emit('updateOnlineCount', onlineUsers);
-    
-    // Удаляем из списка ожидающих
-    waitingUsers.delete(socket.id);
-    
-    // Уведомляем партнера, если был в паре
+  });
+
+  // Обработка сигналов WebRTC
+  socket.on('signal', ({ signal, roomId }) => {
     const pair = connectedPairs.get(socket.id);
-    if (pair) {
-      const { partner, room } = pair;
-      io.to(partner).emit('partnerLeft');
-      connectedPairs.delete(socket.id);
-      connectedPairs.delete(partner);
+    if (pair && pair.room === roomId) {
+      socket.to(roomId).emit('signal', { signal, from: socket.id });
+    }
+  });
+
+  // Обработка сообщений чата
+  socket.on('message', ({ roomId, message }) => {
+    const pair = connectedPairs.get(socket.id);
+    if (pair && pair.room === roomId) {
+      socket.to(roomId).emit('message', { message });
     }
   });
 });
