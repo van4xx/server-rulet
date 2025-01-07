@@ -1,26 +1,41 @@
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const fs = require('fs');
 
 const app = express();
+
+// Настройка CORS
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST'],
-  credentials: true
+  credentials: true,
+  optionsSuccessStatus: 204
 }));
 
-const server = http.createServer(app);
-const io = new Server(server, {
+// Создаем HTTP сервер
+const httpServer = http.createServer(app);
+
+// Создаем HTTPS сервер
+const httpsServer = https.createServer({
+  key: fs.readFileSync('/etc/letsencrypt/live/ruletka.top/privkey.pem'),
+  cert: fs.readFileSync('/etc/letsencrypt/live/ruletka.top/fullchain.pem'),
+}, app);
+
+// Настраиваем Socket.IO
+const io = new Server(httpsServer, {
   cors: {
     origin: '*',
     methods: ["GET", "POST"],
-    credentials: true
+    credentials: true,
+    transports: ['websocket', 'polling']
   },
-  transports: ['websocket', 'polling'],
   allowEIO3: true,
   pingTimeout: 30000,
-  pingInterval: 10000
+  pingInterval: 10000,
+  path: '/socket.io'
 });
 
 const waitingUsers = new Set();
@@ -173,7 +188,13 @@ setInterval(() => {
   log('Current connected pairs:', connectedPairs.size);
 }, 5000);
 
-const PORT = process.env.PORT || 5002;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+const HTTP_PORT = 5001;
+const HTTPS_PORT = 5002;
+
+httpServer.listen(HTTP_PORT, () => {
+  console.log(`HTTP Server running on port ${HTTP_PORT}`);
+});
+
+httpsServer.listen(HTTPS_PORT, () => {
+  console.log(`HTTPS Server running on port ${HTTPS_PORT}`);
 }); 
