@@ -6,7 +6,7 @@ Wants=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/ruletka/server
+WorkingDirectory=/root/server-rulet
 ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=10
@@ -22,7 +22,7 @@ LimitNPROC=65535
 # Security
 NoNewPrivileges=true
 ProtectSystem=full
-ProtectHome=true
+ProtectHome=read-only
 PrivateTmp=true
 
 [Install]

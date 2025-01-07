@@ -13,7 +13,7 @@ let httpsServer;
 let io;
 
 // Serve static files in production
-app.use(express.static(path.join(__dirname, '../ruletka/build')));
+app.use(express.static(path.join(__dirname, '../../rulet/build')));
 
 // CORS configuration
 const corsOptions = {
@@ -82,7 +82,7 @@ if (isDevelopment) {
 
 // Handle production routing
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../ruletka/build/index.html'));
+  res.sendFile(path.join(__dirname, '../../rulet/build/index.html'));
 });
 
 // Глобальные переменные для отслеживания пользователей
