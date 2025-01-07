@@ -17,9 +17,10 @@ app.use(express.static(path.join(__dirname, '../ruletka/build')));
 
 // CORS configuration
 const corsOptions = {
-  origin: isDevelopment ? ["http://localhost:3000"] : ["https://ruletka.top"],
+  origin: isDevelopment ? ["http://localhost:3000"] : ["https://ruletka.top", "wss://ruletka.top"],
   methods: ["GET", "POST"],
-  credentials: true
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"]
 };
 
 app.use(cors(corsOptions));
@@ -74,8 +75,8 @@ if (isDevelopment) {
     console.log('HTTP Server running on port 80 (redirecting to HTTPS)');
   });
   
-  httpsServer.listen(443, () => {
-    console.log('HTTPS Server running on port 443');
+  httpsServer.listen(3000, () => {
+    console.log('HTTPS Server running on port 3000');
   });
 }
 

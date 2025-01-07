@@ -11,7 +11,7 @@ ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=10
 Environment=NODE_ENV=production
-Environment=PORT=443
+Environment=PORT=3000
 StandardOutput=append:/var/log/ruletka.log
 StandardError=append:/var/log/ruletka.error.log
 
