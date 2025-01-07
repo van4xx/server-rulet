@@ -43,8 +43,9 @@ if (isDevelopment) {
 } else {
   // Production: Create HTTPS server with SSL
   const credentials = {
-    key: fs.readFileSync('/etc/letsencrypt/live/ruletka.top/privkey.pem'),
-    cert: fs.readFileSync('/etc/letsencrypt/live/ruletka.top/fullchain.pem')
+    key: fs.readFileSync('/etc/nginx/ssl/ruletka.top.key'),
+    cert: fs.readFileSync('/etc/nginx/ssl/ruletka.top.crt'),
+    ca: fs.readFileSync('/etc/nginx/ssl/ruletka.top.chain.crt')
   };
   
   httpsServer = https.createServer(credentials, app);
