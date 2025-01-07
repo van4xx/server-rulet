@@ -1,41 +1,16 @@
 const express = require('express');
 const http = require('http');
-const https = require('https');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const fs = require('fs');
 
 const app = express();
-
-// Настройка CORS
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST'],
-  credentials: true,
-  optionsSuccessStatus: 204
-}));
-
-// Создаем HTTP сервер
-const httpServer = http.createServer(app);
-
-// Создаем HTTPS сервер
-const httpsServer = https.createServer({
-  key: fs.readFileSync('/etc/letsencrypt/live/ruletka.top/privkey.pem'),
-  cert: fs.readFileSync('/etc/letsencrypt/live/ruletka.top/fullchain.pem'),
-}, app);
-
-// Настраиваем Socket.IO
-const io = new Server(httpsServer, {
+app.use(cors());
+const server = http.createServer(app);
+const io = new Server(server, {
   cors: {
-    origin: '*',
-    methods: ["GET", "POST"],
-    credentials: true,
-    transports: ['websocket', 'polling']
-  },
-  allowEIO3: true,
-  pingTimeout: 30000,
-  pingInterval: 10000,
-  path: '/socket.io'
+    origin: "http://localhost:3000",
+    methods: ["GET", "POST"]
+  }
 });
 
 const waitingUsers = new Set();
@@ -70,44 +45,34 @@ io.on('connection', (socket) => {
     // Удаляем из списка ожидания, если был там
     waitingUsers.delete(socket.id);
 
-    // Проверяем активных пользователей в списке ожидания
-    const activeWaitingUsers = Array.from(waitingUsers).filter(userId => {
-      const userSocket = io.sockets.sockets.get(userId);
-      return userSocket && userSocket.connected && userId !== socket.id;
-    });
-
-    log('Active waiting users:', activeWaitingUsers.length);
-
-    if (activeWaitingUsers.length > 0) {
-      // Берем случайного пользователя из списка ожидания
-      const randomIndex = Math.floor(Math.random() * activeWaitingUsers.length);
-      const partnerSocket = activeWaitingUsers[randomIndex];
-      
-      log('Connecting users:', socket.id, 'and', partnerSocket);
-      waitingUsers.delete(partnerSocket);
-      
-      const roomId = `${socket.id}-${partnerSocket}`;
-      socket.join(roomId);
-      const partnerSocketObj = io.sockets.sockets.get(partnerSocket);
-      
-      if (partnerSocketObj && partnerSocketObj.connected) {
-        partnerSocketObj.join(roomId);
-        
-        connectedPairs.set(socket.id, { partner: partnerSocket, room: roomId });
-        connectedPairs.set(partnerSocket, { partner: socket.id, room: roomId });
-        
-        // Отправляем событие начала чата обоим участникам
-        socket.emit('chatStarted', { roomId, isInitiator: true });
-        io.to(partnerSocket).emit('chatStarted', { roomId, isInitiator: false });
-        
-        log('Users connected successfully in room:', roomId);
-      } else {
-        log('Partner socket not found or disconnected');
-        socket.emit('searchingNewPartner');
-        waitingUsers.add(socket.id);
+    // Ищем партнера среди ожидающих
+    let foundPartner = null;
+    for (const waitingUser of waitingUsers) {
+      const waitingSocket = io.sockets.sockets.get(waitingUser);
+      if (waitingSocket && waitingUser !== socket.id) {
+        foundPartner = waitingUser;
+        break;
       }
+    }
+
+    if (foundPartner) {
+      log('Found partner, connecting:', socket.id, 'with', foundPartner);
+      waitingUsers.delete(foundPartner);
+      
+      const roomId = `room_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      socket.join(roomId);
+      io.sockets.sockets.get(foundPartner).join(roomId);
+      
+      connectedPairs.set(socket.id, { partner: foundPartner, room: roomId });
+      connectedPairs.set(foundPartner, { partner: socket.id, room: roomId });
+      
+      // Отправляем событие начала чата обоим участникам
+      socket.emit('chatStarted', { roomId, isInitiator: true });
+      io.to(foundPartner).emit('chatStarted', { roomId, isInitiator: false });
+      
+      log('Users connected in room:', roomId);
     } else {
-      log('No available partners, adding to waiting list:', socket.id);
+      log('No partners available, adding to waiting list:', socket.id);
       waitingUsers.add(socket.id);
       socket.emit('waiting');
     }
@@ -118,18 +83,51 @@ io.on('connection', (socket) => {
     log('Signal received from', socket.id, 'for room', roomId);
     const pair = connectedPairs.get(socket.id);
     if (pair && pair.room === roomId) {
-      const partnerSocket = io.sockets.sockets.get(pair.partner);
-      if (partnerSocket && partnerSocket.connected) {
-        log('Forwarding signal to partner:', pair.partner);
-        io.to(pair.partner).emit('signal', { signal, from: socket.id });
-      } else {
-        log('Partner disconnected, ending chat');
-        socket.emit('partnerLeft');
-        connectedPairs.delete(socket.id);
-        connectedPairs.delete(pair.partner);
-      }
+      log('Forwarding signal to partner:', pair.partner);
+      io.to(pair.partner).emit('signal', { signal, from: socket.id });
     } else {
       log('Invalid signal: no matching pair found');
+    }
+  });
+
+  socket.on('message', ({ roomId, message }) => {
+    log('Message received from', socket.id, 'for room', roomId);
+    const pair = connectedPairs.get(socket.id);
+    if (pair && pair.room === roomId) {
+      log('Forwarding message to partner:', pair.partner);
+      socket.to(roomId).emit('message', { 
+        message,
+        from: socket.id 
+      });
+    } else {
+      log('Invalid message: no matching pair found');
+    }
+  });
+
+  socket.on('nextPartner', () => {
+    const currentPair = connectedPairs.get(socket.id);
+    if (currentPair) {
+      const { partner, room } = currentPair;
+      
+      // Отключаем текущую пару
+      socket.leave(room);
+      io.sockets.sockets.get(partner)?.leave(room);
+      connectedPairs.delete(socket.id);
+      connectedPairs.delete(partner);
+      io.to(partner).emit('partnerLeft');
+      
+      // Запускаем новый поиск для обоих пользователей
+      socket.emit('searchingNewPartner');
+      io.to(partner).emit('searchingNewPartner');
+      
+      // Добавляем обоих в список ожидания
+      process.nextTick(() => {
+        if (io.sockets.sockets.get(partner)) {
+          waitingUsers.add(partner);
+          io.to(partner).emit('waiting');
+        }
+        socket.emit('startSearch');
+      });
     }
   });
 
@@ -150,8 +148,7 @@ io.on('connection', (socket) => {
       connectedPairs.delete(partner);
       
       // Добавляем партнера обратно в список ожидания
-      const partnerSocket = io.sockets.sockets.get(partner);
-      if (partnerSocket && partnerSocket.connected) {
+      if (io.sockets.sockets.get(partner)) {
         waitingUsers.add(partner);
         io.to(partner).emit('waiting');
       }
@@ -161,40 +158,14 @@ io.on('connection', (socket) => {
 
 // Периодическая очистка "зависших" пользователей
 setInterval(() => {
-  const disconnectedUsers = new Set();
-  
-  // Проверяем все ожидающие сокеты
   for (const userId of waitingUsers) {
-    const userSocket = io.sockets.sockets.get(userId);
-    if (!userSocket || !userSocket.connected) {
-      disconnectedUsers.add(userId);
+    if (!io.sockets.sockets.get(userId)) {
+      waitingUsers.delete(userId);
     }
   }
-  
-  // Удаляем отключенных пользователей
-  for (const userId of disconnectedUsers) {
-    waitingUsers.delete(userId);
-    log('Removed disconnected user:', userId);
-  }
-  
-  // Пересчитываем онлайн
-  const actualOnline = io.sockets.sockets.size;
-  if (actualOnline !== onlineUsers) {
-    onlineUsers = actualOnline;
-    io.emit('updateOnlineCount', onlineUsers);
-  }
-  
-  log('Current waiting users:', waitingUsers.size);
-  log('Current connected pairs:', connectedPairs.size);
-}, 5000);
+}, 10000);
 
-const HTTP_PORT = 5001;
-const HTTPS_PORT = 5002;
-
-httpServer.listen(HTTP_PORT, () => {
-  console.log(`HTTP Server running on port ${HTTP_PORT}`);
-});
-
-httpsServer.listen(HTTPS_PORT, () => {
-  console.log(`HTTPS Server running on port ${HTTPS_PORT}`);
+const PORT = process.env.PORT || 5002;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 }); 
