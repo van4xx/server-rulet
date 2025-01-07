@@ -5,24 +5,37 @@ const cors = require('cors');
 const path = require('path');
 
 const app = express();
+const server = http.createServer(app);
 
-// Serve static files in production
-app.use(express.static(path.join(__dirname, '../ruletka/build')));
+const allowedOrigins = [
+  'https://ruletka.top',
+  'http://localhost:3000',
+  'http://localhost:5001'
+];
 
 // CORS configuration
 app.use(cors({
-  origin: ["https://ruletka.top", "http://localhost:3000"],
+  origin: function(origin, callback) {
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('Origin blocked:', origin);
+      callback(null, false);
+    }
+  },
   methods: ["GET", "POST"],
-  credentials: true
+  credentials: true,
+  allowedHeaders: ["*"]
 }));
 
-const server = http.createServer(app);
+// Serve static files in production
+app.use(express.static(path.join(__dirname, '../ruletka/build')));
 
 // Socket.IO configuration
 const io = new Server(server, {
   path: '/socket.io',
   cors: {
-    origin: ["https://ruletka.top", "http://localhost:3000"],
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true,
     allowedHeaders: ["*"]
@@ -30,7 +43,12 @@ const io = new Server(server, {
   transports: ['websocket', 'polling'],
   pingTimeout: 60000,
   pingInterval: 25000,
-  allowEIO3: true
+  allowEIO3: true,
+  cookie: {
+    name: "io",
+    httpOnly: true,
+    sameSite: "lax"
+  }
 });
 
 // Handle production routing
