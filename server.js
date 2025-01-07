@@ -42,43 +42,54 @@ if (isDevelopment) {
   });
 } else {
   // Production: Create HTTPS server with SSL
-  const credentials = {
-    key: fs.readFileSync('/etc/nginx/ssl/ruletka.top.key'),
-    cert: fs.readFileSync('/etc/nginx/ssl/ruletka.top.crt'),
-    ca: fs.readFileSync('/etc/nginx/ssl/ruletka.top.chain.crt')
-  };
+  console.log('Starting server in production mode...');
   
-  httpsServer = https.createServer(credentials, app);
-  io = new Server(httpsServer, {
-    path: '/socket.io',
-    cors: corsOptions,
-    transports: ['websocket'],
-    pingTimeout: 60000,
-    pingInterval: 25000,
-    allowEIO3: true,
-    cookie: {
-      name: 'io',
-      path: '/',
-      httpOnly: true,
-      sameSite: 'strict',
-      secure: true
-    }
-  });
+  try {
+    const credentials = {
+      key: fs.readFileSync('/etc/nginx/ssl/ruletka.top.key'),
+      cert: fs.readFileSync('/etc/nginx/ssl/ruletka.top.crt'),
+      ca: fs.readFileSync('/etc/nginx/ssl/ruletka.top.chain.crt')
+    };
+    console.log('SSL certificates loaded successfully');
+    
+    httpsServer = https.createServer(credentials, app);
+    console.log('HTTPS server created');
+    
+    io = new Server(httpsServer, {
+      path: '/socket.io',
+      cors: corsOptions,
+      transports: ['websocket'],
+      pingTimeout: 60000,
+      pingInterval: 25000,
+      allowEIO3: true,
+      cookie: {
+        name: 'io',
+        path: '/',
+        httpOnly: true,
+        sameSite: 'strict',
+        secure: true
+      }
+    });
+    console.log('Socket.IO server initialized');
 
-  // Redirect HTTP to HTTPS in production
-  const httpApp = express();
-  httpApp.use((req, res) => {
-    res.redirect(`https://${req.headers.host}${req.url}`);
-  });
-  const httpServer = http.createServer(httpApp);
-  
-  httpServer.listen(80, () => {
-    console.log('HTTP Server running on port 80 (redirecting to HTTPS)');
-  });
-  
-  httpsServer.listen(3000, () => {
-    console.log('HTTPS Server running on port 3000');
-  });
+    // Redirect HTTP to HTTPS in production
+    const httpApp = express();
+    httpApp.use((req, res) => {
+      console.log('HTTP request redirected to HTTPS:', req.url);
+      res.redirect(`https://${req.headers.host}${req.url}`);
+    });
+    const httpServer = http.createServer(httpApp);
+    
+    httpServer.listen(80, () => {
+      console.log('HTTP Server running on port 80 (redirecting to HTTPS)');
+    });
+    
+    httpsServer.listen(3000, () => {
+      console.log('HTTPS Server running on port 3000');
+    });
+  } catch (error) {
+    console.error('Error starting server:', error);
+  }
 }
 
 // Handle production routing
@@ -168,7 +179,7 @@ function handleDisconnect(socket) {
 }
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  console.log('New client connected:', socket.id);
   onlineUsers++;
   io.emit('updateOnlineCount', onlineUsers);
 
@@ -210,7 +221,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
+    console.log('Client disconnected:', socket.id);
     handleDisconnect(socket);
     onlineUsers--;
     io.emit('updateOnlineCount', onlineUsers);
