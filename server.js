@@ -5,7 +5,7 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://ruletka.top'],
+  origin: '*',
   methods: ['GET', 'POST'],
   credentials: true
 }));
@@ -13,14 +13,14 @@ app.use(cors({
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: ['http://localhost:3000', 'https://ruletka.top'],
+    origin: '*',
     methods: ["GET", "POST"],
-    credentials: true,
-    transports: ['websocket', 'polling']
+    credentials: true
   },
+  transports: ['websocket', 'polling'],
   allowEIO3: true,
-  pingTimeout: 60000,
-  pingInterval: 25000
+  pingTimeout: 30000,
+  pingInterval: 10000
 });
 
 const waitingUsers = new Set();
@@ -56,9 +56,12 @@ io.on('connection', (socket) => {
     waitingUsers.delete(socket.id);
 
     // Проверяем активных пользователей в списке ожидания
-    const activeWaitingUsers = Array.from(waitingUsers).filter(userId => 
-      io.sockets.sockets.get(userId) && userId !== socket.id
-    );
+    const activeWaitingUsers = Array.from(waitingUsers).filter(userId => {
+      const userSocket = io.sockets.sockets.get(userId);
+      return userSocket && userSocket.connected && userId !== socket.id;
+    });
+
+    log('Active waiting users:', activeWaitingUsers.length);
 
     if (activeWaitingUsers.length > 0) {
       // Берем случайного пользователя из списка ожидания
@@ -70,14 +73,24 @@ io.on('connection', (socket) => {
       
       const roomId = `${socket.id}-${partnerSocket}`;
       socket.join(roomId);
-      io.sockets.sockets.get(partnerSocket).join(roomId);
+      const partnerSocketObj = io.sockets.sockets.get(partnerSocket);
       
-      connectedPairs.set(socket.id, { partner: partnerSocket, room: roomId });
-      connectedPairs.set(partnerSocket, { partner: socket.id, room: roomId });
-      
-      // Отправляем событие начала чата обоим участникам
-      socket.emit('chatStarted', { roomId, isInitiator: true });
-      io.to(partnerSocket).emit('chatStarted', { roomId, isInitiator: false });
+      if (partnerSocketObj && partnerSocketObj.connected) {
+        partnerSocketObj.join(roomId);
+        
+        connectedPairs.set(socket.id, { partner: partnerSocket, room: roomId });
+        connectedPairs.set(partnerSocket, { partner: socket.id, room: roomId });
+        
+        // Отправляем событие начала чата обоим участникам
+        socket.emit('chatStarted', { roomId, isInitiator: true });
+        io.to(partnerSocket).emit('chatStarted', { roomId, isInitiator: false });
+        
+        log('Users connected successfully in room:', roomId);
+      } else {
+        log('Partner socket not found or disconnected');
+        socket.emit('searchingNewPartner');
+        waitingUsers.add(socket.id);
+      }
     } else {
       log('No available partners, adding to waiting list:', socket.id);
       waitingUsers.add(socket.id);
@@ -90,51 +103,18 @@ io.on('connection', (socket) => {
     log('Signal received from', socket.id, 'for room', roomId);
     const pair = connectedPairs.get(socket.id);
     if (pair && pair.room === roomId) {
-      log('Forwarding signal to partner:', pair.partner);
-      io.to(pair.partner).emit('signal', { signal, from: socket.id });
+      const partnerSocket = io.sockets.sockets.get(pair.partner);
+      if (partnerSocket && partnerSocket.connected) {
+        log('Forwarding signal to partner:', pair.partner);
+        io.to(pair.partner).emit('signal', { signal, from: socket.id });
+      } else {
+        log('Partner disconnected, ending chat');
+        socket.emit('partnerLeft');
+        connectedPairs.delete(socket.id);
+        connectedPairs.delete(pair.partner);
+      }
     } else {
       log('Invalid signal: no matching pair found');
-    }
-  });
-
-  socket.on('message', ({ roomId, message }) => {
-    log('Message received from', socket.id, 'for room', roomId);
-    const pair = connectedPairs.get(socket.id);
-    if (pair && pair.room === roomId) {
-      log('Forwarding message to partner:', pair.partner);
-      socket.to(roomId).emit('message', { 
-        message,
-        from: socket.id 
-      });
-    } else {
-      log('Invalid message: no matching pair found');
-    }
-  });
-
-  socket.on('nextPartner', () => {
-    const currentPair = connectedPairs.get(socket.id);
-    if (currentPair) {
-      const { partner, room } = currentPair;
-      
-      // Отключаем текущую пару
-      socket.leave(room);
-      io.sockets.sockets.get(partner)?.leave(room);
-      connectedPairs.delete(socket.id);
-      connectedPairs.delete(partner);
-      io.to(partner).emit('partnerLeft');
-      
-      // Запускаем новый поиск для обоих пользователей
-      socket.emit('searchingNewPartner');
-      io.to(partner).emit('searchingNewPartner');
-      
-      // Добавляем обоих в список ожидания
-      process.nextTick(() => {
-        if (io.sockets.sockets.get(partner)) {
-          waitingUsers.add(partner);
-          io.to(partner).emit('waiting');
-        }
-        socket.emit('startSearch');
-      });
     }
   });
 
@@ -155,7 +135,8 @@ io.on('connection', (socket) => {
       connectedPairs.delete(partner);
       
       // Добавляем партнера обратно в список ожидания
-      if (io.sockets.sockets.get(partner)) {
+      const partnerSocket = io.sockets.sockets.get(partner);
+      if (partnerSocket && partnerSocket.connected) {
         waitingUsers.add(partner);
         io.to(partner).emit('waiting');
       }
@@ -163,40 +144,33 @@ io.on('connection', (socket) => {
   });
 });
 
-// Периодическая очистка "зависших" пользователей и автоматическое соединение ожидающих
+// Периодическая очистка "зависших" пользователей
 setInterval(() => {
-  // Очистка отключенных пользователей
+  const disconnectedUsers = new Set();
+  
+  // Проверяем все ожидающие сокеты
   for (const userId of waitingUsers) {
-    if (!io.sockets.sockets.get(userId)) {
-      waitingUsers.delete(userId);
+    const userSocket = io.sockets.sockets.get(userId);
+    if (!userSocket || !userSocket.connected) {
+      disconnectedUsers.add(userId);
     }
   }
-
-  // Попытка соединить ожидающих пользователей
-  const activeWaitingUsers = Array.from(waitingUsers).filter(userId => 
-    io.sockets.sockets.get(userId) && !connectedPairs.has(userId)
-  );
-
-  while (activeWaitingUsers.length >= 2) {
-    const user1 = activeWaitingUsers.shift();
-    const user2 = activeWaitingUsers.shift();
-
-    if (io.sockets.sockets.get(user1) && io.sockets.sockets.get(user2)) {
-      const roomId = `${user1}-${user2}`;
-      
-      waitingUsers.delete(user1);
-      waitingUsers.delete(user2);
-      
-      io.sockets.sockets.get(user1).join(roomId);
-      io.sockets.sockets.get(user2).join(roomId);
-      
-      connectedPairs.set(user1, { partner: user2, room: roomId });
-      connectedPairs.set(user2, { partner: user1, room: roomId });
-      
-      io.to(user1).emit('chatStarted', { roomId, isInitiator: true });
-      io.to(user2).emit('chatStarted', { roomId, isInitiator: false });
-    }
+  
+  // Удаляем отключенных пользователей
+  for (const userId of disconnectedUsers) {
+    waitingUsers.delete(userId);
+    log('Removed disconnected user:', userId);
   }
+  
+  // Пересчитываем онлайн
+  const actualOnline = io.sockets.sockets.size;
+  if (actualOnline !== onlineUsers) {
+    onlineUsers = actualOnline;
+    io.emit('updateOnlineCount', onlineUsers);
+  }
+  
+  log('Current waiting users:', waitingUsers.size);
+  log('Current connected pairs:', connectedPairs.size);
 }, 5000);
 
 const PORT = process.env.PORT || 5002;
