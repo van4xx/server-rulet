@@ -1,28 +1,37 @@
 const express = require('express');
+const https = require('https');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
+
+// SSL configuration
+const credentials = {
+  key: fs.readFileSync('/etc/letsencrypt/live/ruletka.top/privkey.pem'),
+  cert: fs.readFileSync('/etc/letsencrypt/live/ruletka.top/fullchain.pem')
+};
 
 // Serve static files in production
 app.use(express.static(path.join(__dirname, '../ruletka/build')));
 
 // CORS configuration
 app.use(cors({
-  origin: ["https://ruletka.top", "http://localhost:3000"],
+  origin: ["https://ruletka.top"],
   methods: ["GET", "POST"],
   credentials: true
 }));
 
-const server = http.createServer(app);
+// Create HTTPS server
+const httpsServer = https.createServer(credentials, app);
 
 // Socket.IO configuration
-const io = new Server(server, {
+const io = new Server(httpsServer, {
   path: '/socket.io',
   cors: {
-    origin: ["https://ruletka.top", "http://localhost:3000"],
+    origin: ["https://ruletka.top"],
     methods: ["GET", "POST"],
     credentials: true,
     allowedHeaders: ["*"]
@@ -30,8 +39,22 @@ const io = new Server(server, {
   transports: ['websocket', 'polling'],
   pingTimeout: 60000,
   pingInterval: 25000,
-  allowEIO3: true
+  allowEIO3: true,
+  cookie: {
+    name: 'io',
+    path: '/',
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: true
+  }
 });
+
+// Redirect HTTP to HTTPS
+const httpApp = express();
+httpApp.use((req, res) => {
+  res.redirect(`https://${req.headers.host}${req.url}`);
+});
+const httpServer = http.createServer(httpApp);
 
 // Handle production routing
 app.get('*', (req, res) => {
@@ -53,8 +76,6 @@ function findMatch(socket) {
     if (partnerId !== socket.id && io.sockets.sockets.get(partnerId)) {
       // Создаем новую комнату
       const roomId = `room_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      
-      console.log(`Creating room ${roomId} for users ${socket.id} and ${partnerId}`);
       
       // Удаляем обоих пользователей из очереди ожидания
       waitingUsers.delete(socket.id);
@@ -148,25 +169,12 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Обработка сигналов WebRTC
-  socket.on('signal', ({ signal, roomId }) => {
-    console.log(`Received signal from ${socket.id} for room ${roomId}`);
-    const pair = connectedPairs.get(socket.id);
-    if (pair && pair.room === roomId) {
-      console.log(`Forwarding signal to partner in room ${roomId}`);
-      socket.to(roomId).emit('signal', { signal, from: socket.id });
-    } else {
-      console.log(`Invalid room or pair for signal: ${roomId}`);
-    }
-  });
-
   socket.on('nextPartner', ({ roomId }) => {
     console.log('Next partner requested by:', socket.id);
     handleDisconnect(socket);
     
     // Автоматически начинаем новый поиск
     process.nextTick(() => {
-      console.log('Starting new search for:', socket.id);
       socket.emit('startSearch');
     });
   });
@@ -183,9 +191,16 @@ io.on('connection', (socket) => {
     io.emit('updateOnlineCount', onlineUsers);
   });
 
+  // Обработка сигналов WebRTC
+  socket.on('signal', ({ signal, roomId }) => {
+    const pair = connectedPairs.get(socket.id);
+    if (pair && pair.room === roomId) {
+      socket.to(roomId).emit('signal', { signal, from: socket.id });
+    }
+  });
+
   // Обработка сообщений чата
   socket.on('message', ({ roomId, message }) => {
-    console.log(`Message from ${socket.id} in room ${roomId}`);
     const pair = connectedPairs.get(socket.id);
     if (pair && pair.room === roomId) {
       socket.to(roomId).emit('message', { message });
@@ -218,7 +233,14 @@ setInterval(() => {
   console.log('After cleanup - Waiting users:', Array.from(waitingUsers.keys()));
 }, 30000);
 
-const PORT = process.env.PORT || 5001;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Start servers
+const HTTP_PORT = 80;
+const HTTPS_PORT = 443;
+
+httpServer.listen(HTTP_PORT, () => {
+  console.log(`HTTP Server running on port ${HTTP_PORT} (redirecting to HTTPS)`);
+});
+
+httpsServer.listen(HTTPS_PORT, () => {
+  console.log(`HTTPS Server running on port ${HTTPS_PORT}`);
 }); 
