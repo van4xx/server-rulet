@@ -1,16 +1,29 @@
 [Unit]
 Description=Ruletka Video Chat Server
 After=network.target
+Wants=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/ruletka/server
+WorkingDirectory=/opt/ruletka/server
 ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=10
 Environment=NODE_ENV=production
 Environment=PORT=443
+StandardOutput=append:/var/log/ruletka.log
+StandardError=append:/var/log/ruletka.error.log
+
+# Limits
+LimitNOFILE=65535
+LimitNPROC=65535
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target 
