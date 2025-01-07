@@ -31,7 +31,7 @@ if (isDevelopment) {
   io = new Server(httpServer, {
     path: '/socket.io',
     cors: corsOptions,
-    transports: ['websocket', 'polling'],
+    transports: ['websocket'],
     pingTimeout: 60000,
     pingInterval: 25000,
     allowEIO3: true
@@ -51,7 +51,7 @@ if (isDevelopment) {
   io = new Server(httpsServer, {
     path: '/socket.io',
     cors: corsOptions,
-    transports: ['websocket', 'polling'],
+    transports: ['websocket'],
     pingTimeout: 60000,
     pingInterval: 25000,
     allowEIO3: true,
