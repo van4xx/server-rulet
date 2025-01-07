@@ -42,17 +42,15 @@ io.on('connection', (socket) => {
       io.to(partner).emit('partnerLeft');
     }
 
-    // Проверяем, что пользователь не в списке ожидания
-    if (waitingUsers.has(socket.id)) {
-      log('User already in waiting list');
-      return;
-    }
+    // Удаляем из списка ожидания, если был там
+    waitingUsers.delete(socket.id);
 
     // Ищем партнера
     if (waitingUsers.size > 0) {
       log('Found waiting users:', waitingUsers.size);
       let partnerSocket = null;
       
+      // Находим первого доступного партнера
       for (const waitingUser of waitingUsers) {
         if (waitingUser !== socket.id && io.sockets.sockets.get(waitingUser)) {
           partnerSocket = waitingUser;
@@ -71,33 +69,45 @@ io.on('connection', (socket) => {
         connectedPairs.set(socket.id, { partner: partnerSocket, room: roomId });
         connectedPairs.set(partnerSocket, { partner: socket.id, room: roomId });
         
-        io.to(roomId).emit('chatStarted', { roomId });
+        // Отправляем событие начала чата обоим участникам
+        socket.emit('chatStarted', { roomId, isInitiator: true });
+        io.to(partnerSocket).emit('chatStarted', { roomId, isInitiator: false });
       } else {
         log('No available partners, adding to waiting list:', socket.id);
         waitingUsers.add(socket.id);
+        socket.emit('waiting');
       }
     } else {
       log('No waiting users, adding to waiting list:', socket.id);
       waitingUsers.add(socket.id);
+      socket.emit('waiting');
     }
   });
 
-  socket.on('sendSignal', ({ signal, to }) => {
-    console.log('Signal sent from', socket.id, 'to', to);
-    // Находим партнера через пару
+  // Обработка WebRTC сигналов
+  socket.on('signal', ({ signal, roomId }) => {
+    log('Signal received from', socket.id, 'for room', roomId);
     const pair = connectedPairs.get(socket.id);
-    if (pair) {
-      io.to(pair.partner).emit('receiveSignal', { signal, from: socket.id });
+    if (pair && pair.room === roomId) {
+      log('Forwarding signal to partner:', pair.partner);
+      io.to(pair.partner).emit('signal', { signal, from: socket.id });
+    } else {
+      log('Invalid signal: no matching pair found');
     }
-  });
-
-  socket.on('returnSignal', ({ signal, to }) => {
-    console.log('Return signal from', socket.id, 'to', to);
-    io.to(to).emit('receiveReturnSignal', { signal, from: socket.id });
   });
 
   socket.on('message', ({ roomId, message }) => {
-    socket.to(roomId).emit('message', message);
+    log('Message received from', socket.id, 'for room', roomId);
+    const pair = connectedPairs.get(socket.id);
+    if (pair && pair.room === roomId) {
+      log('Forwarding message to partner:', pair.partner);
+      socket.to(roomId).emit('message', { 
+        message,
+        from: socket.id 
+      });
+    } else {
+      log('Invalid message: no matching pair found');
+    }
   });
 
   socket.on('nextPartner', () => {
@@ -105,24 +115,30 @@ io.on('connection', (socket) => {
     if (currentPair) {
       const { partner, room } = currentPair;
       
+      // Отключаем текущую пару
       socket.leave(room);
       io.sockets.sockets.get(partner)?.leave(room);
-      
       connectedPairs.delete(socket.id);
       connectedPairs.delete(partner);
-      
       io.to(partner).emit('partnerLeft');
+      
+      // Запускаем новый поиск для обоих пользователей
+      socket.emit('searchingNewPartner');
+      io.to(partner).emit('searchingNewPartner');
+      
+      // Добавляем обоих в список ожидания
+      process.nextTick(() => {
+        if (io.sockets.sockets.get(partner)) {
+          waitingUsers.add(partner);
+          io.to(partner).emit('waiting');
+        }
+        socket.emit('startSearch');
+      });
     }
-    
-    // Автоматически начинаем новый поиск
-    socket.emit('searchingNewPartner');
-    process.nextTick(() => {
-      socket.emit('startSearch');
-    });
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
+    log('User disconnected:', socket.id);
     onlineUsers--;
     io.emit('updateOnlineCount', onlineUsers);
     
@@ -136,6 +152,12 @@ io.on('connection', (socket) => {
       io.to(partner).emit('partnerLeft');
       connectedPairs.delete(socket.id);
       connectedPairs.delete(partner);
+      
+      // Добавляем партнера обратно в список ожидания
+      if (io.sockets.sockets.get(partner)) {
+        waitingUsers.add(partner);
+        io.to(partner).emit('waiting');
+      }
     }
   });
 });
@@ -149,7 +171,7 @@ setInterval(() => {
   }
 }, 10000);
 
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT || 5002;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 }); 
