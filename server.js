@@ -72,18 +72,6 @@ if (isDevelopment) {
     });
     console.log('Socket.IO server initialized');
 
-    // Redirect HTTP to HTTPS in production
-    const httpApp = express();
-    httpApp.use((req, res) => {
-      console.log('HTTP request redirected to HTTPS:', req.url);
-      res.redirect(`https://${req.headers.host}${req.url}`);
-    });
-    const httpServer = http.createServer(httpApp);
-    
-    httpServer.listen(80, () => {
-      console.log('HTTP Server running on port 80 (redirecting to HTTPS)');
-    });
-    
     httpsServer.listen(3000, () => {
       console.log('HTTPS Server running on port 3000');
     });
