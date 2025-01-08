@@ -17,7 +17,9 @@ app.use(express.static(path.join(__dirname, '../../rulet/build')));
 
 // CORS configuration
 const corsOptions = {
-  origin: isDevelopment ? ["http://localhost:3000"] : ["https://ruletka.top", "wss://ruletka.top"],
+  origin: isDevelopment 
+    ? ["http://localhost:3000"] 
+    : ["https://ruletka.top", "https://www.ruletka.top", "wss://ruletka.top", "wss://www.ruletka.top"],
   methods: ["GET", "POST"],
   credentials: true,
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"]
