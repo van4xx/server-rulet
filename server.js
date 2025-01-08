@@ -72,8 +72,8 @@ if (isDevelopment) {
     });
     console.log('Socket.IO server initialized');
 
-    httpsServer.listen(3000, () => {
-      console.log('HTTPS Server running on port 3000');
+    httpsServer.listen(5002, () => {
+      console.log('HTTPS Server running on port 5002');
     });
   } catch (error) {
     console.error('Error starting server:', error);
